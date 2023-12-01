@@ -43,6 +43,9 @@ type Package struct {
 	CreatedAt        *time.Time    `json:"created_at"`
 	LastDownloadedAt *time.Time    `json:"last_downloaded_at"`
 	Tags             []PackageTag  `json:"tags"`
+	Pipeline         *Pipeline     `json:"pipeline"`
+	Pipelines        []*Pipeline   `json:"pipelines"`
+	Versions         []*Package    `json:"versions"`
 }
 
 func (s Package) String() string {
@@ -141,6 +144,31 @@ func (s *PackagesService) ListProjectPackages(pid interface{}, opt *ListProjectP
 	}
 
 	return ps, resp, nil
+}
+
+// GetProjectPackage gets a package in a project.
+//
+// GitLab API docs:
+// https://docs.gitlab.com/ee/api/packages.html#get-a-project-package
+func (s *PackagesService) GetProjectPackage(pid interface{}, pkg int, options ...RequestOptionFunc) (*Package, *Response, error) {
+	project, err := parseID(pid)
+	if err != nil {
+		return nil, nil, err
+	}
+	u := fmt.Sprintf("projects/%s/packages/%d", PathEscape(project), pkg)
+
+	req, err := s.client.NewRequest(http.MethodGet, u, nil, options)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	p := new(Package)
+	resp, err := s.client.Do(req, p)
+	if err != nil {
+		return nil, resp, err
+	}
+
+	return p, resp, nil
 }
 
 // ListGroupPackagesOptions represents the available ListGroupPackages()
