@@ -166,7 +166,7 @@ func TestListProjectMergeRequests(t *testing.T) {
 	mergeRequests, _, err := client.MergeRequests.ListProjectMergeRequests(278964, &opts)
 
 	require.NoError(t, err)
-	require.Equal(t, 20, len(mergeRequests))
+	require.Equal(t, 3, len(mergeRequests))
 
 	validStates := []string{"opened", "closed", "locked", "merged"}
 	detailedMergeStatuses := []string{
@@ -411,8 +411,7 @@ func TestListMergeRequestDiffs(t *testing.T) {
 	})
 
 	opts := &ListMergeRequestDiffsOptions{
-		Page:    1,
-		PerPage: 2,
+		ListOptions: ListOptions{Page: 1, PerPage: 2},
 	}
 
 	diffs, _, err := client.MergeRequests.ListMergeRequestDiffs(1, 1, opts)

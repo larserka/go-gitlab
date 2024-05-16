@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"reflect"
@@ -276,6 +277,53 @@ func TestListOwnedProjects(t *testing.T) {
 	}
 }
 
+func TestEditProject(t *testing.T) {
+	mux, client := setup(t)
+
+	var developerAccessLevel AccessControlValue = "developer"
+	opt := &EditProjectOptions{
+		CIRestrictPipelineCancellationRole: Ptr(developerAccessLevel),
+	}
+
+	// Store whether we've set the restrict value in our edit properly
+	restrictValueSet := false
+
+	mux.HandleFunc("/api/v4/projects/1", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, http.MethodPut)
+
+		// Check that our request properly included ci_restrict_pipeline_cancellation_role
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("Unable to read body properly. Error: %v", err)
+		}
+
+		// Set the value to check if our value is included
+		restrictValueSet = strings.Contains(string(body), "ci_restrict_pipeline_cancellation_role")
+
+		// Print the start of the mock example from https://docs.gitlab.com/ee/api/projects.html#edit-project
+		// including the attribute we edited
+		fmt.Fprint(w, `
+		{
+			"id": 1,
+			"description": "Lorem ipsum dolor sit amet, consectetur adipiscing elit.",
+			"description_html": "<p data-sourcepos=\"1:1-1:56\" dir=\"auto\">Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>",
+			"default_branch": "main",
+			"visibility": "private",
+			"ssh_url_to_repo": "git@example.com:diaspora/diaspora-project-site.git",
+			"http_url_to_repo": "http://example.com/diaspora/diaspora-project-site.git",
+			"web_url": "http://example.com/diaspora/diaspora-project-site",
+			"readme_url": "http://example.com/diaspora/diaspora-project-site/blob/main/README.md",
+			"ci_restrict_pipeline_cancellation_role": "developer"
+		}`)
+	})
+
+	project, resp, err := client.Projects.EditProject(1, opt)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, true, restrictValueSet)
+	assert.Equal(t, developerAccessLevel, project.CIRestrictPipelineCancellationRole)
+}
+
 func TestListStarredProjects(t *testing.T) {
 	mux, client := setup(t)
 
@@ -323,6 +371,9 @@ func TestGetProjectByID(t *testing.T) {
 			  "name_regex_keep": null,
 			  "next_run_at": "2020-01-07T21:42:58.658Z"
 			},
+			"ci_forward_deployment_enabled": true,
+			"ci_forward_deployment_rollback_allowed": true,
+			"ci_restrict_pipeline_cancellation_role": "developer",
 			"packages_enabled": false,
 			"build_coverage_regex": "Total.*([0-9]{1,3})%"
 		  }`)
@@ -336,8 +387,11 @@ func TestGetProjectByID(t *testing.T) {
 			Cadence:   "7d",
 			NextRunAt: &wantTimestamp,
 		},
-		PackagesEnabled:    false,
-		BuildCoverageRegex: `Total.*([0-9]{1,3})%`,
+		PackagesEnabled:                    false,
+		BuildCoverageRegex:                 `Total.*([0-9]{1,3})%`,
+		CIForwardDeploymentEnabled:         true,
+		CIForwardDeploymentRollbackAllowed: true,
+		CIRestrictPipelineCancellationRole: "developer",
 	}
 
 	project, _, err := client.Projects.GetProject(1, nil)
@@ -1413,4 +1467,239 @@ func TestProjectModelsOptionalMergeAttribute(t *testing.T) {
 		t.Fatal("Failed to marshal object", err)
 	}
 	assert.False(t, strings.Contains(string(jsonString), "only_allow_merge_if_all_status_checks_passed"))
+}
+
+// Test that the "CustomWebhookTemplate" serializes properly
+func TestProjectAddWebhook_CustomTemplate(t *testing.T) {
+	mux, client := setup(t)
+	customWebhookSet := false
+
+	mux.HandleFunc("/api/v4/projects/1/hooks",
+		func(w http.ResponseWriter, r *http.Request) {
+			testMethod(t, r, http.MethodPost)
+			w.WriteHeader(http.StatusCreated)
+
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("Unable to read body properly. Error: %v", err)
+			}
+			customWebhookSet = strings.Contains(string(body), "custom_webhook_template")
+
+			fmt.Fprint(w, `{
+				"custom_webhook_template": "testValue"
+			}`)
+		},
+	)
+
+	hook, resp, err := client.Projects.AddProjectHook(1, &AddProjectHookOptions{
+		CustomWebhookTemplate: Ptr(`{"example":"{{object_kind}}"}`),
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	assert.Equal(t, true, customWebhookSet)
+	assert.Equal(t, "testValue", hook.CustomWebhookTemplate)
+}
+
+// Test that the "CustomWebhookTemplate" serializes properly when editing
+func TestProjectEditWebhook_CustomTemplate(t *testing.T) {
+	mux, client := setup(t)
+	customWebhookSet := false
+
+	mux.HandleFunc("/api/v4/projects/1/hooks/1",
+		func(w http.ResponseWriter, r *http.Request) {
+			testMethod(t, r, http.MethodPut)
+			w.WriteHeader(http.StatusOK)
+
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("Unable to read body properly. Error: %v", err)
+			}
+			customWebhookSet = strings.Contains(string(body), "custom_webhook_template")
+
+			fmt.Fprint(w, "{}")
+		},
+	)
+
+	_, resp, err := client.Projects.EditProjectHook(1, 1, &EditProjectHookOptions{
+		CustomWebhookTemplate: Ptr(`{"example":"{{object_kind}}"}`),
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, true, customWebhookSet)
+}
+
+func TestGetProjectPushRules(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v4/projects/1/push_rule", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, http.MethodGet)
+		fmt.Fprint(w, `{
+			"id": 1,
+			"commit_message_regex": "Fixes \\d+\\..*",
+			"commit_message_negative_regex": "ssh\\:\\/\\/",
+			"branch_name_regex": "(feat|fix)\\/*",
+			"deny_delete_tag": false,
+			"member_check": false,
+			"prevent_secrets": false,
+			"author_email_regex": "@company.com$",
+			"file_name_regex": "(jar|exe)$",
+			"max_file_size": 5,
+			"commit_committer_check": false,
+			"commit_committer_name_check": false,
+			"reject_unsigned_commits": false
+		  }`)
+	})
+
+	rule, _, err := client.Projects.GetProjectPushRules(1)
+	if err != nil {
+		t.Errorf("Projects.GetProjectPushRules returned error: %v", err)
+	}
+
+	want := &ProjectPushRules{
+		ID:                         1,
+		CommitMessageRegex:         "Fixes \\d+\\..*",
+		CommitMessageNegativeRegex: "ssh\\:\\/\\/",
+		BranchNameRegex:            "(feat|fix)\\/*",
+		DenyDeleteTag:              false,
+		MemberCheck:                false,
+		PreventSecrets:             false,
+		AuthorEmailRegex:           "@company.com$",
+		FileNameRegex:              "(jar|exe)$",
+		MaxFileSize:                5,
+		CommitCommitterCheck:       false,
+		CommitCommitterNameCheck:   false,
+		RejectUnsignedCommits:      false,
+	}
+
+	if !reflect.DeepEqual(want, rule) {
+		t.Errorf("Projects.GetProjectPushRules returned %+v, want %+v", rule, want)
+	}
+}
+
+func TestAddProjectPushRules(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v4/projects/1/push_rule", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, http.MethodPost)
+		fmt.Fprint(w, `{
+			"id": 1,
+			"commit_message_regex": "Fixes \\d+\\..*",
+			"commit_message_negative_regex": "ssh\\:\\/\\/",
+			"branch_name_regex": "(feat|fix)\\/*",
+			"deny_delete_tag": false,
+			"member_check": false,
+			"prevent_secrets": false,
+			"author_email_regex": "@company.com$",
+			"file_name_regex": "(jar|exe)$",
+			"max_file_size": 5,
+			"commit_committer_check": false,
+			"commit_committer_name_check": false,
+			"reject_unsigned_commits": false
+		  }`)
+	})
+
+	opt := &AddProjectPushRuleOptions{
+		CommitMessageRegex:         Ptr("Fixes \\d+\\..*"),
+		CommitMessageNegativeRegex: Ptr("ssh\\:\\/\\/"),
+		BranchNameRegex:            Ptr("(feat|fix)\\/*"),
+		DenyDeleteTag:              Ptr(false),
+		MemberCheck:                Ptr(false),
+		PreventSecrets:             Ptr(false),
+		AuthorEmailRegex:           Ptr("@company.com$"),
+		FileNameRegex:              Ptr("(jar|exe)$"),
+		MaxFileSize:                Ptr(5),
+		CommitCommitterCheck:       Ptr(false),
+		CommitCommitterNameCheck:   Ptr(false),
+		RejectUnsignedCommits:      Ptr(false),
+	}
+
+	rule, _, err := client.Projects.AddProjectPushRule(1, opt)
+	if err != nil {
+		t.Errorf("Projects.AddProjectPushRule returned error: %v", err)
+	}
+
+	want := &ProjectPushRules{
+		ID:                         1,
+		CommitMessageRegex:         "Fixes \\d+\\..*",
+		CommitMessageNegativeRegex: "ssh\\:\\/\\/",
+		BranchNameRegex:            "(feat|fix)\\/*",
+		DenyDeleteTag:              false,
+		MemberCheck:                false,
+		PreventSecrets:             false,
+		AuthorEmailRegex:           "@company.com$",
+		FileNameRegex:              "(jar|exe)$",
+		MaxFileSize:                5,
+		CommitCommitterCheck:       false,
+		CommitCommitterNameCheck:   false,
+		RejectUnsignedCommits:      false,
+	}
+
+	if !reflect.DeepEqual(want, rule) {
+		t.Errorf("Projects.AddProjectPushRule returned %+v, want %+v", rule, want)
+	}
+}
+
+func TestEditProjectPushRules(t *testing.T) {
+	mux, client := setup(t)
+
+	mux.HandleFunc("/api/v4/projects/1/push_rule", func(w http.ResponseWriter, r *http.Request) {
+		testMethod(t, r, http.MethodPut)
+		fmt.Fprint(w, `{
+			"id": 1,
+			"commit_message_regex": "Fixes \\d+\\..*",
+			"commit_message_negative_regex": "ssh\\:\\/\\/",
+			"branch_name_regex": "(feat|fix)\\/*",
+			"deny_delete_tag": false,
+			"member_check": false,
+			"prevent_secrets": false,
+			"author_email_regex": "@company.com$",
+			"file_name_regex": "(jar|exe)$",
+			"max_file_size": 5,
+			"commit_committer_check": false,
+			"commit_committer_name_check": false,
+			"reject_unsigned_commits": false
+		  }`)
+	})
+
+	opt := &EditProjectPushRuleOptions{
+		CommitMessageRegex:         Ptr("Fixes \\d+\\..*"),
+		CommitMessageNegativeRegex: Ptr("ssh\\:\\/\\/"),
+		BranchNameRegex:            Ptr("(feat|fix)\\/*"),
+		DenyDeleteTag:              Ptr(false),
+		MemberCheck:                Ptr(false),
+		PreventSecrets:             Ptr(false),
+		AuthorEmailRegex:           Ptr("@company.com$"),
+		FileNameRegex:              Ptr("(jar|exe)$"),
+		MaxFileSize:                Ptr(5),
+		CommitCommitterCheck:       Ptr(false),
+		CommitCommitterNameCheck:   Ptr(false),
+		RejectUnsignedCommits:      Ptr(false),
+	}
+
+	rule, _, err := client.Projects.EditProjectPushRule(1, opt)
+	if err != nil {
+		t.Errorf("Projects.EditProjectPushRule returned error: %v", err)
+	}
+
+	want := &ProjectPushRules{
+		ID:                         1,
+		CommitMessageRegex:         "Fixes \\d+\\..*",
+		CommitMessageNegativeRegex: "ssh\\:\\/\\/",
+		BranchNameRegex:            "(feat|fix)\\/*",
+		DenyDeleteTag:              false,
+		MemberCheck:                false,
+		PreventSecrets:             false,
+		AuthorEmailRegex:           "@company.com$",
+		FileNameRegex:              "(jar|exe)$",
+		MaxFileSize:                5,
+		CommitCommitterCheck:       false,
+		CommitCommitterNameCheck:   false,
+		RejectUnsignedCommits:      false,
+	}
+
+	if !reflect.DeepEqual(want, rule) {
+		t.Errorf("Projects.EditProjectPushRule returned %+v, want %+v", rule, want)
+	}
 }
